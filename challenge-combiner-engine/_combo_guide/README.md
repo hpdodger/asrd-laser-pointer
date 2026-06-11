@@ -27,10 +27,16 @@ interface IChallengeModule {
     enabled:   boolean;
     convars:   { [cvar: string]: string };
     variables?: { [key: string]: string | number };  // tunable parameters
+    requires_registry?: number;  // warn loudly when combined with an older combine_registry.nut
 
     OnGameplayStart?(): void;
     Update?(): void;
     Cleanup?(): void;
+    OnEnable?(): void;       // called by chat_admin on !cc_enable
+    OnDisable?(): void;      // called on !cc_disable — clean up visible side effects here
+    OnVariableChanged?(name: string, value: any): null | false | any;
+                             // !cc_set validation: null = accept, false = reject,
+                             // anything else = corrected value that gets stored
     OnGameEvent_weapon_fire?(params: any): void;
     // ... any other OnGameEvent_*
 }
@@ -100,11 +106,21 @@ Globals injected into the root table when `combine_registry.nut` is included:
 ```typescript
 declare let g_Modules: IChallengeModule[];
 
+declare let CC_REGISTRY_VERSION: number;
+
 declare function RegisterModule(m: IChallengeModule): void;
 declare function Dispatch(hookName: string): void;
 declare function DispatchEvent(hookName: string, params: Record<string, any>): void;
 declare function ApplyConvars(): void;
+
+declare enum HudPrint { Notify = 1, Console = 2, Talk = 3, Center = 4 }  // ClientPrint destinations
 ```
+
+`Dispatch`/`DispatchEvent` isolate errors: a module that throws is reported to
+the console (`[CC] ERROR in <module>.<hook>: ...`) and skipped for that event —
+one broken module cannot silence the rest of the combo. `CC_REGISTRY_VERSION`
+plus a module's `requires_registry` turn version drift between copied registry
+files into a loud warning instead of silent breakage.
 
 ---
 
@@ -330,6 +346,9 @@ Built-in module for managing other modules at runtime. All commands except `!cc_
 | `!cc_disable <name>` | Disable a module |
 | `!cc_vars <name>` | Show a module's `variables` |
 | `!cc_set <name> <var> <value>` | Change a module's variable |
+| `!cc_save` | Save all module variables (per leader, this server) |
+| `!cc_load` | Re-apply the saved variables |
+| `!cc_reset` | Restore defaults and clear the saved file |
 
 Example:
 ```
@@ -342,6 +361,14 @@ Example:
 ```
 
 Type is preserved: if the variable was a number, the value is converted to `float`.
+
+Settings persist across maps: `!cc_save` writes every module's `variables` to
+`save/vscripts/cc/<leader steam id>.txt` on the **server** machine; at gameplay
+start the file of the *current* lobby leader is re-applied automatically, and
+every value passes the module's `OnVariableChanged` validation. `!cc_reset`
+restores compile-time defaults and clears the file. On a listen server the host
+is usually the leader, so the settings effectively live with them; on a
+dedicated server each leader gets their own file on that server.
 
 Remove from the dispatcher if not needed — delete the `IncludeScript("module_chat_admin.nut")` line.
 
@@ -395,4 +422,13 @@ The module whose `IncludeScript` comes first in the dispatcher wins.
 | Sub-file | `<name>_<subname>.nut` | `shot_announcer_messages.nut` |
 | Tunable parameters | `variables.field` | `variables.damage`, `variables.interval` |
 | Private state | `_field` | `_msgIndex`, `_nextUpdate` |
+| Private helper functions | `_methodName` | `_printHelp`, `_ensureBeam` |
+| Module-local constants | `_UPPER_SNAKE` slots | `_PREFIX`, `_CMD_SET`, `_MODE_BEAM` |
+| Engine/registry contract names | as required (PascalCase) | `OnGameplayStart`, `Update`, `Cleanup`, `RegisterModule` |
 | Dispatcher | `challenge_<name>.nut` | `challenge_combiner.nut` |
+
+Repeated tokens, mode strings and print destinations never appear as raw
+literals at call sites: tokens live in `_UPPER_SNAKE` slots (or a command table
+that also carries help text and access rules), print destinations come from the
+shared `HudPrint` enum in `combine_registry.nut`. One-off message strings stay
+inline — extract on the second use.

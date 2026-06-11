@@ -1,87 +1,101 @@
 // module_laser_pointer.nut
-// DRG-style laser pointer: a beam from your marine to your crosshair, visible
-// to every player, plus a "mark" pulse + chat info when you fire while active.
+// DRG-style laser pointer: an engine-rendered beam from your marine to your
+// crosshair, visible to every player — other clients need NO files. The beam
+// stops on enemies and teammates, not just walls. Firing while the pointer is
+// active "marks" the target: a glow flash at the spot plus a chat message with
+// the target's name and distance.
 //
 // Activation:
 //   chat:    laser  (or !laser)                 — toggle
 //   console: scripted_user_func laser           — toggle without chat spam (bindable)
 //            scripted_user_func laser_on / laser_off — for hold-style +/- aliases
 //
-// Render modes (variables.mode):
-//   "beam" (default) — world-space env_beam tracking two marker entities;
-//                      rendered by the engine, works even for clients that do
-//                      NOT have the challenge files installed
-//   "hud"            — screen-space line drawn by laser_pointer_hud.nut;
-//                      requires the challenge files on EVERY client
-//
-// rd_hud_vscript slot contract (MUST match laser_pointer_hud.nut):
-//   SetEntity(0) = source marker          SetInt(0) = active
-//   SetEntity(1) = endpoint marker        SetInt(1) = color index 0..7
-//   SetEntity(2) = mark pulse anchor      SetInt(2) = draw line (0 in beam mode)
-//   SetEntity(3) = owner player           SetFloat(0) = mark Time(), SetFloat(1) = mark duration
+// Rendering (all engine-side, no client scripts):
+//   beam — persistent server-side env_beam between two tracked marker entities
+//   mark — env_sprite glow flash
 
 local m = {
     name    = "LaserPointer",
     enabled = true,
     convars = {},
+    requires_registry = 2,   // uses HudPrint and the lifecycle/validation hooks
 
     variables = {
-        mode           = "beam", // "beam" — engine-rendered, works for everyone; "hud" — needs files on every client
         interval       = 0.05,   // update period, seconds
         src_height     = 45,     // beam source z-offset above marine origin (45 = weapon, 60 = head)
-        mark_radius    = 64,     // search radius for naming the marked target
+        mark_radius    = 64,     // fallback search radius for naming the marked target
         mark_cooldown  = 1.0,    // seconds between marks per player
-        mark_duration  = 1.2,    // mark pulse/flash length, seconds
+        mark_duration  = 1.2,    // mark flash length, seconds
         mark_particles = 0,      // 1 = also spawn particle burst (invisible on some maps)
+        mark_on_fire   = 1,      // 1 = firing while active marks; 0 = only the laser_mark token marks
+        idle_ttl       = 60,     // seconds before an inactive player's entities are freed (0 = keep)
         beam_width     = 1.5,
         beam_alpha     = 220,
     },
+
+    // activation tokens (chat + scripted_user_func)
+    _TOK_TOGGLE = "laser",
+    _TOK_ON     = "laser_on",
+    _TOK_OFF    = "laser_off",
+    _TOK_MARK   = "laser_mark",   // mark without firing; in a -release alias put it BEFORE laser_off
+
+    _PREFIX = "[LP] ",
 
     // Engine assets, always shipped with the game (see asw_ammo.cpp / asw_tesla_trap.cpp)
     _MARKER_MODEL = "models/swarm/ammo/ammoassaultrifle.mdl",
     _FLASH_SPRITE = "sprites/glow01.vmt",
 
-    // keep in sync with SLOT_COLORS in laser_pointer_hud.nut
     _COLORS = ["255 50 50", "0 220 255", "50 255 50", "255 220 0",
                "255 140 0", "255 50 255", "220 220 220", "160 50 255"],
 
-    _players    = {},               // hPlayer -> state table (see _NewState)
+    _players    = {},               // hPlayer -> state table (see _newState)
     _slotOwner  = array(8, null),   // slot -> hPlayer; keeps per-player colors stable
     _nextUpdate = 0.0,
+    _trace      = {},               // reusable table for ScriptTraceLineTable (no per-tick allocs)
+    _VEC_ZERO   = Vector(0, 0, 0),  // mins = maxs = zero => line trace
+
+    // ---------- messaging ----------
+
+    function _msg(hPlayer, text) {
+        ClientPrint(hPlayer, HudPrint.Talk, this._PREFIX + text);
+    },
+
+    function _broadcast(text) {
+        ClientPrint(null, HudPrint.Talk, this._PREFIX + text);
+    },
+
+    function _noSlots(hPlayer) {
+        this._msg(hPlayer, "No free laser slots.");
+    },
 
     // ---------- per-player state ----------
 
-    // rd_hud_vscript as a world marker: FL_EDICT_ALWAYS (networked to every
-    // client; info_target without a model is not — that sank the old version).
-    // Beam endpoints additionally get an invisible model: an entity WITH a model
-    // is not a "static point" (beam_shared.cpp IsStaticPointEntity), so a
-    // persistent env_beam tracks its position client-side every frame.
-    function _Marker(targetname, bBeamEndpoint) {
+    // rd_hud_vscript as a beam endpoint marker: FL_EDICT_ALWAYS (networked to
+    // every client; a modelless info_target is not — that sank an early
+    // version), plus an invisible model: an entity WITH a model is not a
+    // "static point" (beam_shared.cpp IsStaticPointEntity), so the persistent
+    // env_beam tracks its position client-side every frame.
+    function _marker(targetname) {
         local e = Entities.CreateByClassname("rd_hud_vscript");
-        if (targetname != null)
-            e.__KeyValueFromString("targetname", targetname);
-        if (bBeamEndpoint) {
-            e.__KeyValueFromInt("rendermode", 10);   // kRenderNone — the model is never drawn
-            e.__KeyValueFromInt("effects", 272);     // EF_NOSHADOW | EF_NORECEIVESHADOW
-        }
+        e.__KeyValueFromString("targetname", targetname);
+        e.__KeyValueFromInt("rendermode", 10);   // kRenderNone — the model is never drawn
+        e.__KeyValueFromInt("effects", 272);     // EF_NOSHADOW | EF_NORECEIVESHADOW
         e.Spawn();
         e.Activate();
-        if (bBeamEndpoint)
-            e.SetModel(this._MARKER_MODEL);
+        e.SetModel(this._MARKER_MODEL);
         return e;
     },
 
-    function _NewState(hPlayer, slot) {
+    function _newState(hPlayer, slot) {
         local u = UniqueString();
         local srcName = "lp_src_" + slot + u;
         local dstName = "lp_dst_" + slot + u;
 
-        local src   = this._Marker(srcName, true);
-        local dst   = this._Marker(dstName, true);
-        local pulse = this._Marker(null, false);
+        local src = this._marker(srcName);
+        local dst = this._marker(dstName);
 
-        // Engine-rendered mark flash — visible even to clients without the files.
-        // Named + no StartOn spawnflag = spawns hidden (Sprite.cpp).
+        // Engine-rendered mark flash. Named + no StartOn spawnflag = spawns
+        // hidden (Sprite.cpp); ShowSprite/HideSprite toggle it.
         local flash = Entities.CreateByClassname("env_sprite");
         flash.__KeyValueFromString("targetname", "lp_flash_" + slot + u);
         flash.__KeyValueFromString("model", this._FLASH_SPRITE);
@@ -92,37 +106,30 @@ local m = {
         flash.Spawn();
         flash.Activate();
 
-        local hud = Entities.CreateByClassname("rd_hud_vscript");
-        hud.__KeyValueFromString("client_vscript", "laser_pointer_hud.nut");
-        hud.Spawn();
-        hud.Activate();
-        hud.SetEntity(0, src);
-        hud.SetEntity(1, dst);
-        hud.SetEntity(2, pulse);
-        hud.SetEntity(3, hPlayer);
-        hud.SetInt(0, 0);
-        hud.SetInt(1, slot);
-        hud.SetInt(2, 1);
-        hud.SetFloat(0, 0.0);
-        hud.SetFloat(1, 0.0);
-
         return {
             slot = slot, active = false,
-            hud = hud, src = src, dst = dst, pulse = pulse, flash = flash,
+            src = src, dst = dst, flash = flash,
             beam = null, beamOn = false,
             srcName = srcName, dstName = dstName,
-            lastMark = -999.0, lastEnd = null,
+            lastMark = -999.0, lastEnd = null, lastHit = null,
+            lastActive = Time(),
         };
     },
 
-    function _GetState(hPlayer) {
+    function _entsValid(st) {
+        return st.src != null && st.src.IsValid()
+            && st.dst != null && st.dst.IsValid()
+            && st.flash != null && st.flash.IsValid();
+    },
+
+    function _getState(hPlayer) {
         if (hPlayer in this._players) {
             local st = this._players[hPlayer];
-            if (st.hud.IsValid() && st.src.IsValid() && st.dst.IsValid()
-                && st.pulse.IsValid() && st.flash.IsValid())
+            if (this._entsValid(st))
                 return st;
-            // stale handles (mission restarted) — rebuild, keep slot and active flag
-            return this._RebuildState(hPlayer, st);
+            // entities gone (mission restart or idle cleanup) — rebuild, keep
+            // the slot (stable color) and the active flag
+            return this._rebuildState(hPlayer, st);
         }
         local slot = -1;
         for (local i = 0; i < this._slotOwner.len(); i++) {
@@ -131,37 +138,38 @@ local m = {
         }
         if (slot < 0) return null;
         this._slotOwner[slot] = hPlayer;
-        local st = this._NewState(hPlayer, slot);
+        local st = this._newState(hPlayer, slot);
         this._players[hPlayer] <- st;
         return st;
     },
 
-    function _RebuildState(hPlayer, stOld) {
-        this._DestroyState(stOld);
-        local st = this._NewState(hPlayer, stOld.slot);
+    function _rebuildState(hPlayer, stOld) {
+        this._destroyState(stOld);
+        local st = this._newState(hPlayer, stOld.slot);
         st.active = stOld.active;
         this._slotOwner[stOld.slot] = hPlayer;
         this._players[hPlayer] <- st;
         return st;
     },
 
-    function _DestroyState(st) {
-        foreach (k in ["hud", "src", "dst", "pulse", "flash", "beam"]) {
+    function _destroyState(st) {
+        foreach (k in ["src", "dst", "flash", "beam"]) {
             if (st[k] != null && st[k].IsValid()) st[k].Destroy();
             st[k] = null;
         }
+        st.beamOn = false;
         local owner = this._slotOwner[st.slot];
         if (owner == null || !owner.IsValid()) this._slotOwner[st.slot] = null;
     },
 
-    // ---------- env_beam (world-space mode) ----------
+    // ---------- env_beam ----------
 
     // Persistent server-side env_beam (life = 0). Both endpoints are entities
     // WITH models, so the beam is networked once and every client tracks the
     // marker positions frame-by-frame over the reliable entity channel — no
     // per-tick temp entities (those get dropped on lossy connections).
     // TurnOn/TurnOff only toggle EF_NODRAW; the endpoint binding is kept.
-    function _EnsureBeam(st) {
+    function _ensureBeam(st) {
         if (st.beam != null && st.beam.IsValid()) return st.beam;
         local b = Entities.CreateByClassname("env_beam");
         b.__KeyValueFromString("targetname", "lp_beam_" + st.slot + UniqueString());
@@ -182,7 +190,7 @@ local m = {
         return b;
     },
 
-    function _BeamOff(st) {
+    function _beamOff(st) {
         if (st.beam != null && st.beam.IsValid() && st.beamOn)
             DoEntFire("!self", "TurnOff", "", 0, null, st.beam);
         st.beamOn = false;
@@ -190,24 +198,21 @@ local m = {
 
     // ---------- activation ----------
 
-    function _SetActive(hPlayer, on, announce) {
-        local st = this._GetState(hPlayer);
-        if (st == null) { ClientPrint(hPlayer, 3, "[LP] No free laser slots."); return; }
+    function _setActive(hPlayer, on, announce) {
+        local st = this._getState(hPlayer);
+        if (st == null) { this._noSlots(hPlayer); return; }
         if (st.active == on) return;
         st.active = on;
-        if (!on) {
-            if (st.hud.IsValid()) st.hud.SetInt(0, 0);
-            this._BeamOff(st);
-        }
+        if (on) st.lastActive = Time();
+        else this._beamOff(st);
         if (announce)
-            ClientPrint(null, 3, "[LP] " + hPlayer.GetPlayerName() + ": laser "
-                + (on ? "ON" : "OFF") + " (" + this.variables.mode + ")");
+            this._broadcast(hPlayer.GetPlayerName() + ": laser " + (on ? "ON" : "OFF"));
     },
 
-    function _Toggle(hPlayer, announce) {
-        local st = this._GetState(hPlayer);
-        if (st == null) { ClientPrint(hPlayer, 3, "[LP] No free laser slots."); return; }
-        this._SetActive(hPlayer, !st.active, announce);
+    function _toggle(hPlayer, announce) {
+        local st = this._getState(hPlayer);
+        if (st == null) { this._noSlots(hPlayer); return; }
+        this._setActive(hPlayer, !st.active, announce);
     },
 
     // ---------- hooks ----------
@@ -218,13 +223,26 @@ local m = {
         PrecacheModel(this._FLASH_SPRITE);
     },
 
+    // chat_admin calls this on !cc_disable: hide everything we own. Active
+    // flags are kept, so !cc_enable resumes the lasers on the next Update.
+    function OnDisable() {
+        foreach (hPlayer, st in this._players)
+            this._beamOff(st);
+    },
+
+    // !cc_set validation: null = accept, false = reject, else corrected value.
+    function OnVariableChanged(name, value) {
+        if (name == "interval" && value < 0.02) return 0.02;
+        if (name == "idle_ttl" && value < 0)    return 0;
+    },
+
     function OnGameEvent_player_say(params) {
         if (!("text" in params)) return;
         local t = params["text"].tolower();
-        if (t != "laser" && t != "!laser") return;
+        if (t != this._TOK_TOGGLE && t != "!" + this._TOK_TOGGLE) return;
         local hPlayer = GetPlayerFromUserID(params["userid"]);
         if (hPlayer == null || !hPlayer.IsValid()) return;
-        this._Toggle(hPlayer, true);
+        this._toggle(hPlayer, true);
     },
 
     // From the dispatcher: scripted_user_func <token> lands here (and so does
@@ -234,53 +252,72 @@ local m = {
         local hPlayer = params.player;
         if (hPlayer == null || !hPlayer.IsValid()) return;
         local v = params.value.tolower();
-        if      (v == "laser")     this._Toggle(hPlayer, true);
-        else if (v == "laser_on")  this._SetActive(hPlayer, true, false);
-        else if (v == "laser_off") this._SetActive(hPlayer, false, false);
+        if      (v == this._TOK_TOGGLE) this._toggle(hPlayer, true);
+        else if (v == this._TOK_ON)     this._setActive(hPlayer, true, false);
+        else if (v == this._TOK_OFF)    this._setActive(hPlayer, false, false);
+        else if (v == this._TOK_MARK)   this._tryMark(hPlayer);
     },
 
     function OnGameEvent_weapon_fire(params) {
+        if (this.variables.mark_on_fire == 0) return;
         if (!("userid" in params)) return;
         local hPlayer = GetPlayerFromUserID(params["userid"]);
         if (hPlayer == null || !hPlayer.IsValid()) return;
-        if (!(hPlayer in this._players)) return;
-        local st = this._players[hPlayer];
-        if (!st.active || !st.hud.IsValid() || !st.pulse.IsValid() || !st.flash.IsValid()) return;
 
+        // only shots from the marine this player controls
         local hMarine = hPlayer.GetMarine();
         if (hMarine == null || !hMarine.IsValid()) return;
         if (("marine" in params) && params["marine"] != hMarine.entindex()) return;
 
-        if (Time() - st.lastMark < this.variables.mark_cooldown) return;
-        st.lastMark = Time();
-        this._DoMark(hPlayer, hMarine, st);
+        this._tryMark(hPlayer);
     },
 
     // ---------- mark ----------
 
-    function _DoMark(hPlayer, hMarine, st) {
+    // Shared by the weapon_fire path and the laser_mark token: requires an
+    // active pointer and a living marine, rate-limited by mark_cooldown.
+    function _tryMark(hPlayer) {
+        if (!(hPlayer in this._players)) return;
+        local st = this._players[hPlayer];
+        if (!st.active || st.flash == null || !st.flash.IsValid()) return;
+
+        local hMarine = hPlayer.GetMarine();
+        if (hMarine == null || !hMarine.IsValid()) return;
+
+        if (Time() - st.lastMark < this.variables.mark_cooldown) return;
+        st.lastMark = Time();
+        this._doMark(hPlayer, hMarine, st);
+    },
+
+    function _doMark(hPlayer, hMarine, st) {
         local pos = (st.lastEnd != null) ? st.lastEnd : hPlayer.GetCrosshairTracePos();
 
-        // pulse: anchor entity + timestamp contract (client animates by Time())
-        st.pulse.SetOrigin(pos);
-        st.hud.SetFloat(1, this.variables.mark_duration.tofloat());
-        st.hud.SetFloat(0, Time());
-
-        // engine-rendered glow flash — visible to clients without the files too
+        // engine-rendered glow flash — everyone sees it, no client files needed
         st.flash.SetOrigin(pos);
         DoEntFire("!self", "ShowSprite", "", 0, null, st.flash);
         DoEntFire("!self", "HideSprite", "", this.variables.mark_duration.tofloat(), null, st.flash);
 
-        local what = this._DescribeTarget(pos);
+        // the beam trace already told us what we are pointing at
+        local what;
+        if (st.lastHit != null && st.lastHit.IsValid()) what = this._describeEntity(st.lastHit);
+        else what = this._describeTarget(pos);
+
         local d = pos - hMarine.GetOrigin();
         local dist = sqrt(d.x * d.x + d.y * d.y + d.z * d.z).tointeger();
-        ClientPrint(null, 3, "[LP] " + hPlayer.GetPlayerName() + " marks " + what
-            + " (" + dist + " units)");
+        this._broadcast(hPlayer.GetPlayerName() + " marks " + what + " (" + dist + " units)");
 
-        if (this.variables.mark_particles != 0) this._ParticleBurst(pos);
+        if (this.variables.mark_particles != 0) this._particleBurst(pos);
     },
 
-    function _DescribeTarget(pos) {
+    function _describeEntity(e) {
+        if (e.GetClassname() == "asw_marine") return e.GetMarineName();
+        return e.GetClassname();
+    },
+
+    // Fallback for when the ray hit the world: name the nearest notable entity
+    // around the endpoint (corpses, items and other non-solid things the trace
+    // cannot hit).
+    function _describeTarget(pos) {
         local radius = this.variables.mark_radius.tofloat();
         local best = null;
         local bestDistSq = radius * radius;
@@ -297,13 +334,12 @@ local m = {
             if (distSq < bestDistSq) { best = e; bestDistSq = distSq; }
         }
         if (best == null) return "a position";
-        if (best.GetClassname() == "asw_marine") return best.GetMarineName();
-        return best.GetClassname();
+        return this._describeEntity(best);
     },
 
     // Legacy world-space burst. Off by default: these particle systems are not
-    // loaded on every map (the HUD pulse always works, this is a bonus).
-    function _ParticleBurst(pos) {
+    // loaded on every map (the glow flash always works, this is a bonus).
+    function _particleBurst(pos) {
         foreach (eff in ["jumpjet_glow", "explosion_sparks"]) {
             local p = Entities.CreateByClassname("info_particle_system");
             p.__KeyValueFromString("effect_name", eff);
@@ -321,61 +357,66 @@ local m = {
         if (Time() < this._nextUpdate) return;
         this._nextUpdate = Time() + this.variables.interval;
 
-        local beamMode = (this.variables.mode.tolower() == "beam");
         local toRemove = [];
         local toHeal = [];
 
         foreach (hPlayer, st in this._players) {
             if (!hPlayer.IsValid()) { toRemove.append(hPlayer); continue; }
-            if (!st.active) continue;
 
-            if (!st.hud.IsValid() || !st.src.IsValid() || !st.dst.IsValid() || !st.pulse.IsValid()) {
+            if (!st.active) {
+                // free this player's edicts after idle_ttl seconds; the slot and
+                // the entry stay, so the color survives reactivation
+                if (st.src != null && this.variables.idle_ttl > 0
+                    && Time() - st.lastActive > this.variables.idle_ttl)
+                    this._destroyState(st);
+                continue;
+            }
+            st.lastActive = Time();
+
+            if (!this._entsValid(st)) {
                 toHeal.append(hPlayer);   // a restart killed our entities mid-round
                 continue;
             }
 
             local hMarine = hPlayer.GetMarine();
             if (hMarine == null || !hMarine.IsValid()) {
-                st.hud.SetInt(0, 0);      // hidden while dead; auto-resumes on respawn
-                this._BeamOff(st);
+                this._beamOff(st);        // hidden while dead; auto-resumes on respawn
                 continue;
             }
 
             local srcPos = hMarine.GetOrigin() + Vector(0, 0, this.variables.src_height.tofloat());
             local dstPos = hPlayer.GetCrosshairTracePos();
 
-            // Clip at the first wall. Trace from the visual source, not the feet,
-            // otherwise the floor clips the beam.
-            local frac = TraceLine(srcPos, dstPos, hMarine);
-            if (frac < 1.0) dstPos = srcPos + (dstPos - srcPos) * frac;
+            // Clip against world AND characters (default mask is
+            // MASK_VISIBLE_AND_NPCS): the beam stops on aliens and marines like
+            // the DRG pointer, and the hit entity names the mark target.
+            local t = this._trace;
+            t.ignore <- hMarine;
+            ScriptTraceLineTable(t, srcPos, dstPos, this._VEC_ZERO, this._VEC_ZERO);
+            dstPos = t.pos;
+            local hit = t.enthit;
+            st.lastHit = (hit != null && hit.IsValid() && hit.GetClassname() != "worldspawn") ? hit : null;
             st.lastEnd = dstPos;
 
             st.src.SetOrigin(srcPos);
             st.dst.SetOrigin(dstPos);
-            st.hud.SetInt(1, st.slot);
-            st.hud.SetInt(2, beamMode ? 0 : 1);
-            st.hud.SetInt(0, 1);
 
-            if (beamMode) {
-                local b = this._EnsureBeam(st);
-                if (!st.beamOn) {
-                    DoEntFire("!self", "TurnOn", "", 0, null, b);
-                    st.beamOn = true;
-                }
-            } else {
-                this._BeamOff(st);
+            local b = this._ensureBeam(st);
+            if (!st.beamOn) {
+                DoEntFire("!self", "TurnOn", "", 0, null, b);
+                st.beamOn = true;
             }
         }
 
-        foreach (p in toHeal) this._RebuildState(p, this._players[p]);
+        foreach (p in toHeal) this._rebuildState(p, this._players[p]);
         foreach (p in toRemove) {
-            this._DestroyState(this._players[p]);
+            this._destroyState(this._players[p]);
             this._players.rawdelete(p);
         }
     },
 
     function Cleanup() {
-        foreach (hPlayer, st in this._players) this._DestroyState(st);
+        foreach (hPlayer, st in this._players) this._destroyState(st);
         this._players = {};
         this._slotOwner = array(8, null);
         this._nextUpdate = 0.0;
