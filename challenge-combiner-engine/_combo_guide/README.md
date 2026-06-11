@@ -27,6 +27,8 @@ interface IChallengeModule {
     enabled:   boolean;
     convars:   { [cvar: string]: string };
     variables?: { [key: string]: string | number };  // tunable parameters
+    variables_help?:  { [key: string]: string };     // filled by CC_DeclareVariables
+    variables_order?: string[];                      // filled by CC_DeclareVariables
     requires_registry?: number;  // warn loudly when combined with an older combine_registry.nut
 
     OnGameplayStart?(): void;
@@ -112,9 +114,17 @@ declare function RegisterModule(m: IChallengeModule): void;
 declare function Dispatch(hookName: string): void;
 declare function DispatchEvent(hookName: string, params: Record<string, any>): void;
 declare function ApplyConvars(): void;
+declare function CC_DeclareVariables(m: IChallengeModule, decls: [string, any, string][]): void;
 
 declare enum HudPrint { Notify = 1, Console = 2, Talk = 3, Center = 4 }  // ClientPrint destinations
 ```
+
+Tunables are best declared from one list — `CC_DeclareVariables(m,
+[["interval", 0.05, "update period, seconds"], ...])` fills `variables` (the
+plain name→value table the module code reads as usual) plus `variables_help`
+and `variables_order`, so `!cc_vars` prints every variable with its description
+in the declared order. A plain `variables = {...}` literal keeps working —
+just without descriptions.
 
 `Dispatch`/`DispatchEvent` isolate errors: a module that throws is reported to
 the console (`[CC] ERROR in <module>.<hook>: ...`) and skipped for that event —

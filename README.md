@@ -29,8 +29,8 @@ unchanged into both the standalone dispatcher and the challenge combiner.
 | Toggle on/off | type `laser` (or `!laser`) in chat |
 | Same, without chat spam | `scripted_user_func laser` in console; handy as `bind v "scripted_user_func laser"` |
 | Hold mode (shines while the key is held) | `alias +lp "scripted_user_func laser_on"`<br>`alias -lp "scripted_user_func laser_off"`<br>`bind MOUSE4 "+lp"` |
-| Mark a target | fire while the pointer is active (default; turn off with `mark_on_fire 0`) |
-| Mark without firing | `bind MOUSE5 "scripted_user_func laser_mark"` |
+| Mark a target | `bind MOUSE5 "scripted_user_func laser_mark"` (or the gesture below) |
+| Mark by firing (off by default) | `!cc_set LaserPointer mark_on_fire 1` — shots while the pointer is active also mark |
 | Full DRG gesture (hold = beam, release = mark, no shot) | `alias +lpm "scripted_user_func laser_on"`<br>`alias -lpm "scripted_user_func laser_mark; scripted_user_func laser_off"`<br>`bind MOUSE4 "+lpm"` |
 
 `scripted_user_func` is a stock engine command (added to RD in December 2017):
@@ -45,7 +45,7 @@ the client forwards it to the server, and the challenge receives the
 !cc_vars LaserPointer                  — current parameters
 !cc_set LaserPointer interval 0.1      — update rate
 !cc_set LaserPointer mark_particles 1  — extra particle burst on mark
-!cc_set LaserPointer mark_on_fire 0    — firing no longer marks (use laser_mark)
+!cc_set LaserPointer mark_on_fire 1    — firing while active also marks
 !cc_save                               — persist current settings (auto-applied while you lead)
 ```
 
@@ -62,10 +62,10 @@ settings survive map changes: they are stored per lobby leader on the server
 | `mark_cooldown` | `1.0` | minimum time between marks, seconds |
 | `mark_duration` | `1.2` | mark flash duration, seconds |
 | `mark_particles` | `0` | `1` — also spawn particles at the mark (invisible on some maps) |
-| `mark_on_fire` | `1` | `1` — firing while active marks the target; `0` — only `laser_mark` does |
+| `mark_on_fire` | `0` | `0` — only `laser_mark` marks; `1` — firing while active also marks |
 | `idle_ttl` | `60` | seconds before an inactive player's laser entities are freed (0 = keep) |
-| `beam_width` | `1.5` | env_beam width |
-| `beam_alpha` | `220` | env_beam opacity |
+| `beam_width` | `1.5` | beam width — applies to existing beams immediately |
+| `beam_alpha` | `220` | beam opacity 0–255 — applies to existing beams immediately |
 
 Pointer colors are assigned automatically per player slot (8 colors, stable for
 the duration of the mission).

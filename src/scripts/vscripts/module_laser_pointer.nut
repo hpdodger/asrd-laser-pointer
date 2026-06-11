@@ -18,20 +18,10 @@ local m = {
     name    = "LaserPointer",
     enabled = true,
     convars = {},
-    requires_registry = 2,   // uses HudPrint and the lifecycle/validation hooks
+    requires_registry = 3,   // HudPrint, lifecycle/validation hooks, CC_DeclareVariables
 
-    variables = {
-        interval       = 0.05,   // update period, seconds
-        src_height     = 45,     // beam source z-offset above marine origin (45 = weapon, 60 = head)
-        mark_radius    = 64,     // fallback search radius for naming the marked target
-        mark_cooldown  = 1.0,    // seconds between marks per player
-        mark_duration  = 1.2,    // mark flash length, seconds
-        mark_particles = 0,      // 1 = also spawn particle burst (invisible on some maps)
-        mark_on_fire   = 1,      // 1 = firing while active marks; 0 = only the laser_mark token marks
-        idle_ttl       = 60,     // seconds before an inactive player's entities are freed (0 = keep)
-        beam_width     = 1.5,
-        beam_alpha     = 220,
-    },
+    // variables, their defaults and the help texts shown by !cc_vars are
+    // declared in ONE list via ::CC_DeclareVariables below the table literal.
 
     // activation tokens (chat + scripted_user_func)
     _TOK_TOGGLE = "laser",
@@ -196,6 +186,15 @@ local m = {
         st.beamOn = false;
     },
 
+    // Fire an entity input on every existing beam — makes beam_width/beam_alpha
+    // changes visible immediately (creation keyvalues only cover new beams).
+    function _applyBeamInput(szInput, value) {
+        foreach (hPlayer, st in this._players) {
+            if (st.beam != null && st.beam.IsValid())
+                DoEntFire("!self", szInput, "" + value, 0, null, st.beam);
+        }
+    },
+
     // ---------- activation ----------
 
     function _setActive(hPlayer, on, announce) {
@@ -231,9 +230,23 @@ local m = {
     },
 
     // !cc_set validation: null = accept, false = reject, else corrected value.
+    // beam_width/beam_alpha are additionally pushed to the existing beams via
+    // CBeam inputs ("Width", base "Alpha"), so the change applies instantly.
     function OnVariableChanged(name, value) {
         if (name == "interval" && value < 0.02) return 0.02;
         if (name == "idle_ttl" && value < 0)    return 0;
+        if (name == "beam_width") {
+            local w = (value < 0.1) ? 0.1 : value;
+            this._applyBeamInput("Width", w);
+            return (w == value) ? null : w;
+        }
+        if (name == "beam_alpha") {
+            local a = value;
+            if (a < 0)   a = 0;
+            if (a > 255) a = 255;
+            this._applyBeamInput("Alpha", a.tointeger());
+            return (a == value) ? null : a;
+        }
     },
 
     function OnGameEvent_player_say(params) {
@@ -422,5 +435,19 @@ local m = {
         this._nextUpdate = 0.0;
     },
 };
+
+// Single source for every tunable: name, default, help (printed by !cc_vars).
+::CC_DeclareVariables(m, [
+    ["interval",       0.05, "update period, seconds"],
+    ["src_height",     45,   "beam source height (45 = weapon, 60 = head)"],
+    ["mark_radius",    64,   "fallback target search radius at the endpoint"],
+    ["mark_cooldown",  1.0,  "minimum seconds between marks"],
+    ["mark_duration",  1.2,  "mark flash duration, seconds"],
+    ["mark_particles", 0,    "1 = extra particle burst on mark (map-dependent)"],
+    ["mark_on_fire",   0,    "1 = firing while active also marks"],
+    ["idle_ttl",       60,   "free an idle player's entities after N sec (0 = keep)"],
+    ["beam_width",     1.5,  "beam width, applies to existing beams instantly"],
+    ["beam_alpha",     220,  "beam opacity 0-255, applies instantly"],
+]);
 
 ::RegisterModule(m);

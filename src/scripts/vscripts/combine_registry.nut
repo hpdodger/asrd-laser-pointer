@@ -9,6 +9,7 @@
 //   ::Dispatch("HookName")      — call a no-arg hook on all enabled modules
 //   ::DispatchEvent("HookName", p) — call an event hook on all enabled modules
 //   ::ApplyConvars()            — apply convars, print conflict warnings
+//   ::CC_DeclareVariables(m, [[name, default, help], ...]) — single-source tunables
 //   enum HudPrint               — ClientPrint destination codes (use HudPrint.Talk)
 
 // Shared constants for every module. This file is included exactly once and
@@ -24,7 +25,9 @@ enum HudPrint {
 // Copies of this file have no other version control: bump on incompatible
 // changes so that combining a new module with an old registry warns loudly
 // instead of breaking silently.
-::CC_REGISTRY_VERSION <- 2;   // v2: HudPrint enum, error isolation, lifecycle/validation hooks
+// v2: HudPrint enum, error isolation, lifecycle/validation hooks
+// v3: CC_DeclareVariables (single-source tunables: default + help + order)
+::CC_REGISTRY_VERSION <- 3;
 
 ::g_Modules         <- [];
 ::g_ConvarRegistry  <- {};
@@ -86,6 +89,22 @@ enum HudPrint {
     }
     ::g_ConvarRegistry  = {};
     ::g_ConvarConflicts = [];
+};
+
+// Declare a module's tunables from one list of [name, default, help] entries.
+// Fills m.variables (plain name -> value, read by module code as before) plus
+// m.variables_help and m.variables_order, which !cc_vars uses to print each
+// variable with its description in the declared order. A plain
+// `variables = {...}` literal still works — just without descriptions.
+::CC_DeclareVariables <- function(m, decls) {
+    m.variables       <- {};
+    m.variables_help  <- {};
+    m.variables_order <- [];
+    foreach (d in decls) {
+        m.variables[d[0]]      <- d[1];
+        m.variables_help[d[0]] <- d[2];
+        m.variables_order.append(d[0]);
+    }
 };
 
 // Internal: add one convar to the registry and check for conflicts.

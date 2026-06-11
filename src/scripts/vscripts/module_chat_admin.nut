@@ -170,8 +170,20 @@ local m = {
             return;
         }
         this._msg(hPlayer, mod.name + " variables:");
-        foreach (k, v in mod.variables)
-            this._msgRaw(hPlayer, "  " + k + " = " + v);
+        // author-defined order and help texts when declared via CC_DeclareVariables
+        local keys = [];
+        if ("variables_order" in mod) {
+            keys = mod.variables_order;
+        } else {
+            foreach (k, v in mod.variables) keys.append(k);
+        }
+        foreach (k in keys) {
+            if (!(k in mod.variables)) continue;
+            local line = "  " + k + " = " + mod.variables[k];
+            if (("variables_help" in mod) && (k in mod.variables_help))
+                line += " - " + mod.variables_help[k];
+            this._msgRaw(hPlayer, line);
+        }
         this._msgRaw(hPlayer, "  " + this._CMD_SET + " " + mod.name + " <var> <value>");
     },
 
