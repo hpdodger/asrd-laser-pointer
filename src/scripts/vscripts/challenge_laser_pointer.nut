@@ -3,7 +3,8 @@
 
 IncludeScript("combine_registry.nut");
 IncludeScript("module_chat_admin.nut");      // chat commands: !cc_help / !cc_vars / !cc_set
-IncludeScript("module_laser_pointer.nut");
+IncludeScript("laser_pointer/module_laser_pointer.nut");
+IncludeScript("laser_pointer/module_asbi.nut");   // difficulty pack, off by default (!cc_enable ASBI)
 
 function OnGameplayStart() {
     ::ApplyConvars();

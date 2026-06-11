@@ -372,13 +372,21 @@ Example:
 
 Type is preserved: if the variable was a number, the value is converted to `float`.
 
-Settings persist across maps: `!cc_save` writes every module's `variables` to
+Settings persist across maps: `!cc_save` writes every module's **on/off state**
+(`Module.__enabled=0|1` lines, ChatAdmin itself excluded) and `variables` to
 `save/vscripts/cc/<leader steam id>.txt` on the **server** machine; at gameplay
 start the file of the *current* lobby leader is re-applied automatically, and
-every value passes the module's `OnVariableChanged` validation. `!cc_reset`
+every variable passes the module's `OnVariableChanged` validation. `!cc_reset`
 restores compile-time defaults and clears the file. On a listen server the host
 is usually the leader, so the settings effectively live with them; on a
 dedicated server each leader gets their own file on that server.
+
+Enabled flags load **silently** at gameplay start: `OnEnable`/`OnDisable` fire
+only on runtime transitions (`!cc_enable`, `!cc_load`, `!cc_reset`). Therefore
+a module whose enabling has side effects must apply them in its own
+`OnGameplayStart` when `this.enabled` is true — and `module_chat_admin.nut`
+must stay FIRST in the dispatcher's include list so its auto-load runs before
+the other modules' `OnGameplayStart` hooks.
 
 Remove from the dispatcher if not needed — delete the `IncludeScript("module_chat_admin.nut")` line.
 

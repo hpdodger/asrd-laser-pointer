@@ -51,8 +51,8 @@ the client forwards it to the server, and the challenge receives the
 
 All commands except `!cc_help` are lobby leader only. Engine replies are prefixed
 with `[CC]` (Challenge Combiner), laser pointer messages with `[LP]`. Saved
-settings survive map changes: they are stored per lobby leader on the server
-(`!cc_reset` restores defaults).
+settings — module on/off states and variables — survive map changes: they are
+stored per lobby leader on the server (`!cc_reset` restores defaults).
 
 | Parameter | Default | What it does |
 |---|---|---|
@@ -61,6 +61,7 @@ settings survive map changes: they are stored per lobby leader on the server
 | `mark_radius` | `64` | fallback search radius for naming the marked target (used when the ray hit the world) |
 | `mark_cooldown` | `1.0` | minimum time between marks, seconds |
 | `mark_duration` | `1.2` | mark flash duration, seconds |
+| `mark_chat` | `1` | `1` — announce target name and distance in chat |
 | `mark_particles` | `0` | `1` — also spawn particles at the mark (invisible on some maps) |
 | `mark_on_fire` | `0` | `0` — only `laser_mark` marks; `1` — firing while active also marks |
 | `idle_ttl` | `60` | seconds before an inactive player's laser entities are freed (0 = keep) |
@@ -77,16 +78,34 @@ installed. The beam, the mark flash and the chat messages are rendered and sent
 by the engine itself, so everyone else sees everything without installing
 anything.
 
+## Bundled extra: ASBI difficulty pack
+
+The challenge ships the official ASBI difficulty preset as a separate module,
+**disabled by default** — for advanced lobbies. The leader toggles it any time:
+
+```
+!cc_enable ASBI     — harder spawns, real friendly fire, alien scaling, instant ignite...
+!cc_disable ASBI    — restore the previous convar values
+```
+
+The convar set mirrors the official ASBI challenge (manifest + script),
+including the difficulty-dependent block: `asw_skill` is read at the moment of
+enabling, so re-enable ASBI after changing the difficulty. One deliberate
+deviation: `rd_auto_kick_low_level_player` is **not** included. Combined with
+`!cc_save`, the enabled state survives map changes.
+
 ## Repository layout
 
 ```
 src/                                       the challenge itself (copy into the game folder)
   resource/challenges/laser_pointer.txt    challenge manifest (no convars)
   scripts/vscripts/
-    challenge_laser_pointer.nut            standalone dispatcher (combo format)
-    module_laser_pointer.nut               all logic (combo module)
+    challenge_laser_pointer.nut            standalone dispatcher (the engine requires this exact path)
     combine_registry.nut                   engine copy — do not edit
     module_chat_admin.nut                  engine copy (!cc_help / !cc_vars / !cc_set) — do not edit
+    laser_pointer/
+      module_laser_pointer.nut             all pointer logic (combo module)
+      module_asbi.nut                      ASBI difficulty pack (off by default)
 challenge-combiner-engine/                 the framework this challenge is based on
   _combo_guide/                            module format guide + example modules
   asrd_challenge_combiner/                 reference combiner challenge (laser module already wired in)
@@ -95,11 +114,11 @@ challenge-combiner-engine/                 the framework this challenge is based
 ### Using it in the Challenge Combiner
 
 Adding the module to a combiner dispatcher takes one
-`IncludeScript("module_laser_pointer.nut");` line plus a `UserConsoleCommand`
-wrapper — see
+`IncludeScript("laser_pointer/module_laser_pointer.nut");` line plus a
+`UserConsoleCommand` wrapper — see
 `challenge-combiner-engine/asrd_challenge_combiner/scripts/vscripts/challenge_challenge_combiner.nut`,
-where it is already done. `module_laser_pointer.nut` must sit next to the other
-modules in `scripts/vscripts/`.
+where it is already done. Keep the `laser_pointer/` subfolder when copying the
+module next to a combiner.
 
 ## How it works
 

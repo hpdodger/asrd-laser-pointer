@@ -10,7 +10,8 @@ IncludeScript("module_chat_admin.nut");       // lobby-leader chat commands; rem
 IncludeScript("module_infinite_ammo.nut");
 IncludeScript("module_shot_announcer.nut");
 IncludeScript("module_toxic_atmo.nut");
-IncludeScript("module_laser_pointer.nut");
+IncludeScript("laser_pointer/module_laser_pointer.nut");
+IncludeScript("laser_pointer/module_asbi.nut");   // difficulty pack, off by default (!cc_enable ASBI)
 
 function OnGameplayStart() {
     ::ApplyConvars();

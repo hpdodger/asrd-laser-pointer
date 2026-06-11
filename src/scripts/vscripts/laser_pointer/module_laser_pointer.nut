@@ -310,14 +310,16 @@ local m = {
         DoEntFire("!self", "ShowSprite", "", 0, null, st.flash);
         DoEntFire("!self", "HideSprite", "", this.variables.mark_duration.tofloat(), null, st.flash);
 
-        // the beam trace already told us what we are pointing at
-        local what;
-        if (st.lastHit != null && st.lastHit.IsValid()) what = this._describeEntity(st.lastHit);
-        else what = this._describeTarget(pos);
+        if (this.variables.mark_chat != 0) {
+            // the beam trace already told us what we are pointing at
+            local what;
+            if (st.lastHit != null && st.lastHit.IsValid()) what = this._describeEntity(st.lastHit);
+            else what = this._describeTarget(pos);
 
-        local d = pos - hMarine.GetOrigin();
-        local dist = sqrt(d.x * d.x + d.y * d.y + d.z * d.z).tointeger();
-        this._broadcast(hPlayer.GetPlayerName() + " marks " + what + " (" + dist + " units)");
+            local d = pos - hMarine.GetOrigin();
+            local dist = sqrt(d.x * d.x + d.y * d.y + d.z * d.z).tointeger();
+            this._broadcast(hPlayer.GetPlayerName() + " marks " + what + " (" + dist + " units)");
+        }
 
         if (this.variables.mark_particles != 0) this._particleBurst(pos);
     },
@@ -443,6 +445,7 @@ local m = {
     ["mark_radius",    64,   "fallback target search radius at the endpoint"],
     ["mark_cooldown",  1.0,  "minimum seconds between marks"],
     ["mark_duration",  1.2,  "mark flash duration, seconds"],
+    ["mark_chat",      1,    "1 = announce target name and distance in chat"],
     ["mark_particles", 0,    "1 = extra particle burst on mark (map-dependent)"],
     ["mark_on_fire",   0,    "1 = firing while active also marks"],
     ["idle_ttl",       60,   "free an idle player's entities after N sec (0 = keep)"],

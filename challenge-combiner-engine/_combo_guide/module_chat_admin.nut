@@ -6,11 +6,17 @@
 // the !cc_help output and the usage hints are all generated from it — no token
 // and no slice length is ever retyped.
 //
-// Settings persistence: !cc_save writes every module's `variables` to
-// save/vscripts/cc/<leader steam id>.txt on the SERVER machine. At gameplay
-// start the file of the CURRENT lobby leader is re-applied automatically;
-// every value goes through the module's OnVariableChanged validation.
+// Settings persistence: !cc_save writes every module's enabled flag and
+// `variables` to save/vscripts/cc/<leader steam id>.txt on the SERVER machine.
+// At gameplay start the file of the CURRENT lobby leader is re-applied
+// automatically: variables go through OnVariableChanged validation; enabled
+// flags are set SILENTLY (no OnEnable/OnDisable) — each module applies its own
+// side effects in its OnGameplayStart, which runs after ours because this
+// module must be included first in the dispatcher. Runtime !cc_load and
+// !cc_reset DO fire the lifecycle hooks on state changes.
 // !cc_reset restores compile-time defaults and clears the saved file.
+// ChatAdmin's own enabled flag is never persisted: a saved-off ChatAdmin
+// would brick the chat commands on every following map.
 //
 // Everything except !cc_help is lobby leader only.
 // Messages that do not start with "!cc_" are ignored (other modules may use
@@ -23,7 +29,8 @@ local m = {
 
     _PREFIX       = "[CC] ",
     _CMD_PREFIX   = "!cc_",
-    _SETTINGS_DIR = "cc/",   // under save/vscripts/ (StringToFile prepends that)
+    _SETTINGS_DIR = "cc/",         // under save/vscripts/ (StringToFile prepends that)
+    _KEY_ENABLED  = "__enabled",   // pseudo-variable name for enabled flags in the file
 
     // Command tokens — referenced everywhere, never retyped.
     _CMD_HELP       = "!cc_help",
@@ -36,8 +43,9 @@ local m = {
     _CMD_LOAD       = "!cc_load",
     _CMD_RESET      = "!cc_reset",
 
-    _CMDS     = null,   // built after the table literal — see the bottom of the file
-    _defaults = null,   // moduleName -> { var = defaultValue }, snapshot at gameplay start
+    _CMDS            = null,   // built after the table literal — see the bottom of the file
+    _defaults        = null,   // moduleName -> { var = defaultValue }, snapshot at gameplay start
+    _defaultsEnabled = null,   // moduleName -> default enabled flag, same snapshot
 
     // ---------- messaging ----------
 
@@ -145,12 +153,10 @@ local m = {
     function _enable(hPlayer, szArgs)  { this._toggleModule(hPlayer, szArgs, true);  },
     function _disable(hPlayer, szArgs) { this._toggleModule(hPlayer, szArgs, false); },
 
-    function _toggleModule(hPlayer, name, enable) {
-        local mod = this._findModule(name);
-        if (mod == null) { this._moduleNotFound(hPlayer, name); return; }
+    // Set a module's enabled flag and fire its lifecycle hook. Dispatch skips
+    // disabled modules, so OnDisable is the module's only cleanup signal.
+    function _setEnabled(mod, enable) {
         mod.enabled = enable;
-        // Lifecycle hooks: Dispatch skips disabled modules, so OnDisable is the
-        // module's only chance to clean up visible side effects.
         local hook = enable ? "OnEnable" : "OnDisable";
         if (hook in mod) {
             try {
@@ -159,6 +165,12 @@ local m = {
                 printl(this._PREFIX + "ERROR in " + mod.name + "." + hook + ": " + e);
             }
         }
+    },
+
+    function _toggleModule(hPlayer, name, enable) {
+        local mod = this._findModule(name);
+        if (mod == null) { this._moduleNotFound(hPlayer, name); return; }
+        this._setEnabled(mod, enable);
         this._broadcast(mod.name + (enable ? " enabled." : " disabled."));
     },
 
@@ -221,7 +233,7 @@ local m = {
     function _load(hPlayer, szArgs) {
         local id = this._leaderId();
         if (id == null) { this._msg(hPlayer, "Cannot resolve the lobby leader's Steam ID."); return; }
-        local n = this._loadApply(id);
+        local n = this._loadApply(id, false);
         if (n < 0) this._msg(hPlayer, "No saved settings found.");
         else this._broadcast("Loaded " + n + " saved setting(s).");
     },
@@ -233,6 +245,13 @@ local m = {
                 if (mod == null || !("variables" in mod)) continue;
                 foreach (k, v in vars)
                     if (k in mod.variables) mod.variables[k] = v;
+            }
+        }
+        if (this._defaultsEnabled != null) {
+            foreach (modName, def in this._defaultsEnabled) {
+                local mod = this._findModule(modName);
+                if (mod == null || mod.name == this.name) continue;
+                if (mod.enabled != def) this._setEnabled(mod, def);   // hooks fire on the change
             }
         }
         local id = this._leaderId();
@@ -266,10 +285,13 @@ local m = {
         return this._sanitizeId(hLeader.GetNetworkIDString());
     },
 
-    // One "ModuleName.varName=value" line per variable.
+    // One "ModuleName.__enabled=0|1" line per module (except ChatAdmin itself),
+    // then one "ModuleName.varName=value" line per variable.
     function _serialize() {
         local s = "";
         foreach (mod in ::g_Modules) {
+            if (mod.name != this.name)
+                s += mod.name + "." + this._KEY_ENABLED + "=" + (mod.enabled ? "1" : "0") + "\n";
             if (!("variables" in mod)) continue;
             foreach (k, v in mod.variables)
                 s += mod.name + "." + k + "=" + v + "\n";
@@ -292,9 +314,13 @@ local m = {
         return lines;
     },
 
-    // Apply saved lines through the same path as !cc_set (validation included).
+    // Apply saved lines through the same paths as !cc_set / !cc_enable.
+    // bSilentFlags = true (gameplay start): enabled flags are set WITHOUT the
+    // lifecycle hooks — each module applies its side effects in its own
+    // OnGameplayStart, which runs after this one. false (manual !cc_load):
+    // hooks fire on every state change.
     // Returns the number of applied values, or -1 if there is no file.
-    function _loadApply(id) {
+    function _loadApply(id, bSilentFlags) {
         local text = FileToString(this._settingsFile(id));
         if (text == null) return -1;
         local applied = 0;
@@ -304,7 +330,21 @@ local m = {
             if (dot == null || eq == null || dot == 0 || dot >= eq) continue;
             local mod = this._findModule(line.slice(0, dot));
             if (mod == null) continue;
-            if (this._applyVariable(mod, line.slice(dot + 1, eq), line.slice(eq + 1)) == null)
+            local key = line.slice(dot + 1, eq);
+            local val = line.slice(eq + 1);
+
+            if (key == this._KEY_ENABLED) {
+                if (mod.name == this.name) continue;   // never let a file disable ChatAdmin
+                local desired = (val != "0");
+                if (mod.enabled != desired) {
+                    if (bSilentFlags) mod.enabled = desired;
+                    else this._setEnabled(mod, desired);
+                    applied++;
+                }
+                continue;
+            }
+
+            if (this._applyVariable(mod, key, val) == null)
                 applied++;
         }
         return applied;
@@ -333,10 +373,14 @@ local m = {
 
     function OnGameplayStart() {
         // Snapshot compile-time defaults (the VM is fresh every map), then
-        // auto-apply the current leader's saved settings on top.
+        // auto-apply the current leader's saved settings on top. Enabled flags
+        // are set silently here — the other modules' OnGameplayStart hooks run
+        // after this one and apply their own side effects.
         if (this._defaults == null) {
             this._defaults = {};
+            this._defaultsEnabled = {};
             foreach (mod in ::g_Modules) {
+                this._defaultsEnabled[mod.name] <- mod.enabled;
                 if (!("variables" in mod)) continue;
                 local copy = {};
                 foreach (k, v in mod.variables) copy[k] <- v;
@@ -345,7 +389,7 @@ local m = {
         }
         local id = this._leaderId();
         if (id == null) return;
-        local n = this._loadApply(id);
+        local n = this._loadApply(id, true);
         if (n > 0) this._broadcast("Applied " + n + " saved setting(s) for the lobby leader.");
     },
 
@@ -362,8 +406,8 @@ m._CMDS = [
     { cmd = m._CMD_DISABLE,    args = " <module>",               help = "disable a module",                           leader = true,  fn = "_disable"   },
     { cmd = m._CMD_VARS,       args = " <module>",               help = "show a module's variables",                  leader = true,  fn = "_printVars" },
     { cmd = m._CMD_SET,        args = " <module> <var> <value>", help = "change a module's variable",                 leader = true,  fn = "_setVar"    },
-    { cmd = m._CMD_SAVE,       args = "",                        help = "save all variables (per leader, this server)", leader = true, fn = "_save"     },
-    { cmd = m._CMD_LOAD,       args = "",                        help = "re-apply the saved variables",               leader = true,  fn = "_load"      },
+    { cmd = m._CMD_SAVE,       args = "",                        help = "save modules' on/off + variables (per leader, this server)", leader = true, fn = "_save" },
+    { cmd = m._CMD_LOAD,       args = "",                        help = "re-apply the saved settings",                leader = true,  fn = "_load"      },
     { cmd = m._CMD_RESET,      args = "",                        help = "restore defaults and clear the saved file",  leader = true,  fn = "_reset"     },
 ];
 
