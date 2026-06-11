@@ -23,8 +23,10 @@ In TypeScript terms, each module implements this interface:
 
 ```typescript
 interface IChallengeModule {
-    name:      string;
-    enabled:   boolean;
+    name:         string;
+    enabled:      boolean;
+    description?: string;   // one line shown by !cc_info <name>
+    console_info?: string[]; // extra lines !cc_info prints to the player's console
     convars:   { [cvar: string]: string };
     variables?: { [key: string]: string | number };  // tunable parameters
     variables_help?:  { [key: string]: string };     // filled by CC_DeclareVariables
@@ -352,6 +354,7 @@ Built-in module for managing other modules at runtime. All commands except `!cc_
 |---------|--------|
 | `!cc_help` | List available commands (everyone) |
 | `!cc_challenges` | List all modules with `[ON]`/`[OFF]` status |
+| `!cc_info <name>` | Show what a module does (everyone) |
 | `!cc_enable <name>` | Enable a module |
 | `!cc_disable <name>` | Disable a module |
 | `!cc_vars <name>` | Show a module's `variables` |

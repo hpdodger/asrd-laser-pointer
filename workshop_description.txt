@@ -1,0 +1,65 @@
+A Deep Rock Galactic style laser pointer: a player switches it on and everyone in the lobby sees a beam going from their marine to their crosshair. The beam stops on enemies and teammates, not just walls, and a "mark" puts a glow flash on the spot and announces the target and its distance in chat. Everything is rendered by the engine itself — other players don't need to install anything.
+
+Лазерная указка в стиле Deep Rock Galactic: игрок включает её — и все в лобби видят луч от его морпеха к точке прицела. Луч упирается во врагов и союзников, а не только в стены, а «отметка» ставит световую вспышку в точке и сообщает в чат название цели и дистанцию. Всё отрисовывает сам движок — другим игрокам ничего устанавливать не нужно.
+
+[h2]Controls / Управление[/h2]
+[table]
+[tr][th]Action / Действие[/th][th]How / Как[/th][/tr]
+[tr][td]Toggle on/off / Вкл-выкл[/td][td]type [b]laser[/b] (or [b]!laser[/b]) in chat[/td][/tr]
+[tr][td]Silent toggle / Тихое переключение[/td][td]bind v "scripted_user_func laser"[/td][/tr]
+[tr][td]Hold mode / Режим удержания[/td][td]alias +lp "scripted_user_func laser_on"
+alias -lp "scripted_user_func laser_off"
+bind MOUSE4 "+lp"[/td][/tr]
+[tr][td]Mark a target, no shot / Отметка без выстрела[/td][td]bind MOUSE5 "scripted_user_func laser_mark"[/td][/tr]
+[tr][td]Full DRG gesture: hold = beam, release = mark / Жест DRG: зажал = луч, отпустил = отметка[/td][td]alias +lpm "scripted_user_func laser_on"
+alias -lpm "scripted_user_func laser_mark; scripted_user_func laser_off"
+bind MOUSE4 "+lpm"[/td][/tr]
+[tr][td]Mark by firing, off by default / Отметка выстрелом, по умолчанию выкл[/td][td]!cc_set LaserPointer mark_on_fire 1[/td][/tr]
+[/table]
+Tip: type [b]!cc_info LaserPointer[/b] in game — these binding examples are printed straight into your console, ready to copy.
+Подсказка: введите [b]!cc_info LaserPointer[/b] в игре — эти примеры байндов будут напечатаны прямо в вашу консоль, откуда их удобно копировать.
+
+[h2]Tunables / Настройки[/h2]
+[table]
+[tr][th]Variable / Переменная[/th][th]Default / По умолчанию[/th][th]What it does / Что делает[/th][/tr]
+[tr][td]interval[/td][td]0.05[/td][td]update period, seconds[/td][/tr]
+[tr][td]src_height[/td][td]45[/td][td]beam source height (45 = weapon, 60 = head)[/td][/tr]
+[tr][td]mark_radius[/td][td]64[/td][td]fallback target search radius at the endpoint[/td][/tr]
+[tr][td]mark_cooldown[/td][td]1.0[/td][td]minimum seconds between marks[/td][/tr]
+[tr][td]mark_duration[/td][td]1.2[/td][td]mark flash duration, seconds[/td][/tr]
+[tr][td]mark_chat[/td][td]1[/td][td]announce target name and distance in chat[/td][/tr]
+[tr][td]mark_particles[/td][td]0[/td][td]extra particle burst on mark (map-dependent)[/td][/tr]
+[tr][td]mark_on_fire[/td][td]0[/td][td]firing while the pointer is active also marks[/td][/tr]
+[tr][td]idle_ttl[/td][td]60[/td][td]free an idle player's laser entities after N seconds (0 = keep)[/td][/tr]
+[tr][td]beam_width[/td][td]1.5[/td][td]beam width — applies to existing beams instantly[/td][/tr]
+[tr][td]beam_alpha[/td][td]220[/td][td]beam opacity 0-255 — applies instantly[/td][/tr]
+[/table]
+Full descriptions are also available in game: [b]!cc_vars LaserPointer[/b].
+Полные описания доступны и в игре: [b]!cc_vars LaserPointer[/b].
+
+[h2]Managing it from chat / Управление через чат[/h2]
+[table]
+[tr][th]Command / Команда[/th][th]Action / Действие[/th][/tr]
+[tr][td]!cc_help[/td][td]list all commands (everyone)[/td][/tr]
+[tr][td]!cc_info <module>[/td][td]what a module does, details to console (everyone)[/td][/tr]
+[tr][td]!cc_challenges[/td][td]list modules with ON/OFF status[/td][/tr]
+[tr][td]!cc_enable / !cc_disable <module>[/td][td]toggle a module at runtime[/td][/tr]
+[tr][td]!cc_vars <module>[/td][td]show variables with descriptions[/td][/tr]
+[tr][td]!cc_set <module> <var> <value>[/td][td]change a variable (validated; beam settings apply instantly)[/td][/tr]
+[tr][td]!cc_save / !cc_load / !cc_reset[/td][td]persist module on/off states and variables per lobby leader — they survive map changes[/td][/tr]
+[/table]
+All commands except !cc_help and !cc_info are lobby leader only.
+Все команды, кроме !cc_help и !cc_info, доступны только лидеру лобби.
+
+[h2]Built on an extensible challenge engine / Сделано на расширяемом движке[/h2]
+The challenge runs on my own modular engine for ASRD challenges (challenge-combiner-engine): every feature is a self-contained module with runtime on/off switching, validated tunables and per-leader settings persistence. To demonstrate the extensibility, the official [b]ASBI[/b] difficulty preset ships as a bundled module, disabled by default. Turn it on and keep it across maps:
+
+Челлендж работает на моём модульном движке для челленджей ASRD (challenge-combiner-engine): каждая возможность — самостоятельный модуль с переключением на лету, валидируемыми настройками и сохранением параметров на лидера лобби. Для демонстрации расширяемости в комплект включён официальный пресет сложности [b]ASBI[/b], по умолчанию выключенный. Включить и сохранить между картами:
+[code]
+!cc_enable ASBI
+!cc_save
+[/code]
+
+[h2]Source code / Исходный код[/h2]
+The challenge, the engine and the documentation / Челлендж, движок и документация:
+[url=https://github.com/hpdodger/asrd-laser-pointer]github.com/hpdodger/asrd-laser-pointer[/url]

@@ -42,6 +42,7 @@ the client forwards it to the server, and the challenge receives the
 ```
 !cc_help                               — list commands (available to everyone)
 !cc_challenges                         — list modules
+!cc_info ASBI                          — what a module does (available to everyone)
 !cc_vars LaserPointer                  — current parameters
 !cc_set LaserPointer interval 0.1      — update rate
 !cc_set LaserPointer mark_particles 1  — extra particle burst on mark

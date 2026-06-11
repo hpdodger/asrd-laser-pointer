@@ -23,9 +23,10 @@
 // their own !commands).
 
 local m = {
-    name    = "ChatAdmin",
-    enabled = true,
-    convars = {},
+    name        = "ChatAdmin",
+    enabled     = true,
+    convars     = {},
+    description = "Runtime module management: the !cc_ chat commands.",
 
     _PREFIX       = "[CC] ",
     _CMD_PREFIX   = "!cc_",
@@ -35,6 +36,7 @@ local m = {
     // Command tokens — referenced everywhere, never retyped.
     _CMD_HELP       = "!cc_help",
     _CMD_CHALLENGES = "!cc_challenges",
+    _CMD_INFO       = "!cc_info",
     _CMD_ENABLE     = "!cc_enable",
     _CMD_DISABLE    = "!cc_disable",
     _CMD_VARS       = "!cc_vars",
@@ -147,6 +149,23 @@ local m = {
             local status = mod.enabled ? "[ON]" : "[OFF]";
             local hint = ("variables" in mod) ? "  (" + this._CMD_VARS + " " + mod.name + ")" : "";
             this._msgRaw(hPlayer, "  " + status + " " + mod.name + hint);
+        }
+    },
+
+    function _info(hPlayer, szArgs) {
+        if (szArgs == "") { this._msg(hPlayer, "Usage: " + this._CMD_INFO + " <module>"); return; }
+        local mod = this._findModule(szArgs);
+        if (mod == null) { this._moduleNotFound(hPlayer, szArgs); return; }
+        local status = mod.enabled ? "[ON]" : "[OFF]";
+        local desc = ("description" in mod) ? mod.description : "no description";
+        this._msg(hPlayer, status + " " + mod.name + " - " + desc);
+        if ("variables" in mod)
+            this._msgRaw(hPlayer, "  " + this._CMD_VARS + " " + mod.name + " - list tunables");
+        // optional long-form details (bind examples etc.) go to the console:
+        // chat lines are too short for them
+        if ("console_info" in mod) {
+            foreach (line in mod.console_info)
+                ClientPrint(hPlayer, HudPrint.Console, line);
         }
     },
 
@@ -402,6 +421,7 @@ local m = {
 m._CMDS = [
     { cmd = m._CMD_HELP,       args = "",                        help = "this list (everyone)",                       leader = false, fn = "_printHelp" },
     { cmd = m._CMD_CHALLENGES, args = "",                        help = "list modules with ON/OFF status",            leader = true,  fn = "_printList" },
+    { cmd = m._CMD_INFO,       args = " <module>",               help = "show what a module does (everyone)",         leader = false, fn = "_info"      },
     { cmd = m._CMD_ENABLE,     args = " <module>",               help = "enable a module",                            leader = true,  fn = "_enable"    },
     { cmd = m._CMD_DISABLE,    args = " <module>",               help = "disable a module",                           leader = true,  fn = "_disable"   },
     { cmd = m._CMD_VARS,       args = " <module>",               help = "show a module's variables",                  leader = true,  fn = "_printVars" },

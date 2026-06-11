@@ -15,9 +15,28 @@
 //   mark — env_sprite glow flash
 
 local m = {
-    name    = "LaserPointer",
-    enabled = true,
-    convars = {},
+    name        = "LaserPointer",
+    enabled     = true,
+    convars     = {},
+    description = "DRG-style laser pointer: a beam everyone sees. Check your console for key binding examples.",
+
+    // Printed to the player's console by !cc_info (chat is too narrow for binds).
+    // Mirrors the Controls section of the README.
+    console_info = [
+        "=== LaserPointer controls ===",
+        "Toggle in chat:       say  laser   (or !laser)",
+        "Silent toggle bind:   bind v \"scripted_user_func laser\"",
+        "Hold mode (beam shines while the key is held):",
+        "  alias +lp \"scripted_user_func laser_on\"",
+        "  alias -lp \"scripted_user_func laser_off\"",
+        "  bind MOUSE4 \"+lp\"",
+        "Mark without firing:  bind MOUSE5 \"scripted_user_func laser_mark\"",
+        "Full DRG gesture (hold = beam, release = mark, no shot):",
+        "  alias +lpm \"scripted_user_func laser_on\"",
+        "  alias -lpm \"scripted_user_func laser_mark; scripted_user_func laser_off\"",
+        "  bind MOUSE4 \"+lpm\"",
+        "Mark by firing too:   !cc_set LaserPointer mark_on_fire 1",
+    ],
     requires_registry = 3,   // HudPrint, lifecycle/validation hooks, CC_DeclareVariables
 
     // variables, their defaults and the help texts shown by !cc_vars are

@@ -17,9 +17,10 @@
 // OnEnable/OnDisable cover runtime transitions.
 
 local m = {
-    name    = "ASBI",
-    enabled = false,         // opt-in: advanced players only
-    convars = {},            // intentionally empty — see the header
+    name        = "ASBI",
+    enabled     = false,     // opt-in: advanced players only
+    convars     = {},        // intentionally empty — see the header
+    description = "Official ASBI difficulty preset: harder spawns, real friendly fire, tougher aliens (no low-level autokick).",
     requires_registry = 2,   // uses the OnEnable/OnDisable lifecycle hooks
 
     // resource/challenges/asbi.txt + the unconditional part of challenge_asbi.nut
