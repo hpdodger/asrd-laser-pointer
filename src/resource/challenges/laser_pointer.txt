@@ -1,0 +1,9 @@
+"CHALLENGE"
+{
+	"name"			"Laser Pointer"
+	"description"	"DRG-style laser pointer visible to all players. Type laser in chat to toggle, or bind a key: bind v 'scripted_user_func laser'. Fire while active to mark your target. Lobby leader can tune it: !cc_vars LaserPointer"
+
+	"convars"
+	{
+	}
+}

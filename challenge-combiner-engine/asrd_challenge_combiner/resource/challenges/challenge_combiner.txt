@@ -1,0 +1,7 @@
+"CHALLENGE" {
+	"name"			"Challenge Combiner"
+	"description"	"Combines multiple challenge modules. Manage modules via chat: type !cc_help for the command list."
+
+	"convars" {
+	}
+}
