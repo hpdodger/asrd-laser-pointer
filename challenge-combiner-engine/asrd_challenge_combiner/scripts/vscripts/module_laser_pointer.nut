@@ -8,8 +8,11 @@
 //            scripted_user_func laser_on / laser_off — for hold-style +/- aliases
 //
 // Render modes (variables.mode):
-//   "hud"  — screen-space line drawn by laser_pointer_hud.nut (default; always visible)
-//   "beam" — world-space env_beam re-struck each tick via StrikeOnce (zero entity churn)
+//   "beam" (default) — world-space env_beam tracking two marker entities;
+//                      rendered by the engine, works even for clients that do
+//                      NOT have the challenge files installed
+//   "hud"            — screen-space line drawn by laser_pointer_hud.nut;
+//                      requires the challenge files on EVERY client
 //
 // rd_hud_vscript slot contract (MUST match laser_pointer_hud.nut):
 //   SetEntity(0) = source marker          SetInt(0) = active
@@ -23,17 +26,20 @@ local m = {
     convars = {},
 
     variables = {
-        mode           = "hud",  // "hud" | "beam"
+        mode           = "beam", // "beam" — engine-rendered, works for everyone; "hud" — needs files on every client
         interval       = 0.05,   // update period, seconds
         src_height     = 45,     // beam source z-offset above marine origin (45 = weapon, 60 = head)
         mark_radius    = 64,     // search radius for naming the marked target
         mark_cooldown  = 1.0,    // seconds between marks per player
-        mark_duration  = 1.2,    // pulse animation length, seconds
+        mark_duration  = 1.2,    // mark pulse/flash length, seconds
         mark_particles = 0,      // 1 = also spawn particle burst (invisible on some maps)
-        beam_life      = 0.12,   // beam-mode temp beam duration; must exceed interval
         beam_width     = 1.5,
         beam_alpha     = 220,
     },
+
+    // Engine assets, always shipped with the game (see asw_ammo.cpp / asw_tesla_trap.cpp)
+    _MARKER_MODEL = "models/swarm/ammo/ammoassaultrifle.mdl",
+    _FLASH_SPRITE = "sprites/glow01.vmt",
 
     // keep in sync with SLOT_COLORS in laser_pointer_hud.nut
     _COLORS = ["255 50 50", "0 220 255", "50 255 50", "255 220 0",
@@ -45,15 +51,23 @@ local m = {
 
     // ---------- per-player state ----------
 
-    // Bare rd_hud_vscript as a world marker: FL_EDICT_ALWAYS (networked to every
-    // client) and no model (= static point for env_beam's Strike). info_target is
-    // not reliably networked without a model — that sank the old version.
-    function _Marker(targetname) {
+    // rd_hud_vscript as a world marker: FL_EDICT_ALWAYS (networked to every
+    // client; info_target without a model is not — that sank the old version).
+    // Beam endpoints additionally get an invisible model: an entity WITH a model
+    // is not a "static point" (beam_shared.cpp IsStaticPointEntity), so a
+    // persistent env_beam tracks its position client-side every frame.
+    function _Marker(targetname, bBeamEndpoint) {
         local e = Entities.CreateByClassname("rd_hud_vscript");
         if (targetname != null)
             e.__KeyValueFromString("targetname", targetname);
+        if (bBeamEndpoint) {
+            e.__KeyValueFromInt("rendermode", 10);   // kRenderNone — the model is never drawn
+            e.__KeyValueFromInt("effects", 272);     // EF_NOSHADOW | EF_NORECEIVESHADOW
+        }
         e.Spawn();
         e.Activate();
+        if (bBeamEndpoint)
+            e.SetModel(this._MARKER_MODEL);
         return e;
     },
 
@@ -62,9 +76,21 @@ local m = {
         local srcName = "lp_src_" + slot + u;
         local dstName = "lp_dst_" + slot + u;
 
-        local src   = this._Marker(srcName);
-        local dst   = this._Marker(dstName);
-        local pulse = this._Marker(null);
+        local src   = this._Marker(srcName, true);
+        local dst   = this._Marker(dstName, true);
+        local pulse = this._Marker(null, false);
+
+        // Engine-rendered mark flash — visible even to clients without the files.
+        // Named + no StartOn spawnflag = spawns hidden (Sprite.cpp).
+        local flash = Entities.CreateByClassname("env_sprite");
+        flash.__KeyValueFromString("targetname", "lp_flash_" + slot + u);
+        flash.__KeyValueFromString("model", this._FLASH_SPRITE);
+        flash.__KeyValueFromString("rendercolor", this._COLORS[slot]);
+        flash.__KeyValueFromInt("renderamt", 255);
+        flash.__KeyValueFromInt("rendermode", 9);    // world-space glow
+        flash.__KeyValueFromFloat("scale", 0.4);
+        flash.Spawn();
+        flash.Activate();
 
         local hud = Entities.CreateByClassname("rd_hud_vscript");
         hud.__KeyValueFromString("client_vscript", "laser_pointer_hud.nut");
@@ -82,7 +108,8 @@ local m = {
 
         return {
             slot = slot, active = false,
-            hud = hud, src = src, dst = dst, pulse = pulse, beam = null,
+            hud = hud, src = src, dst = dst, pulse = pulse, flash = flash,
+            beam = null, beamOn = false,
             srcName = srcName, dstName = dstName,
             lastMark = -999.0, lastEnd = null,
         };
@@ -91,7 +118,8 @@ local m = {
     function _GetState(hPlayer) {
         if (hPlayer in this._players) {
             local st = this._players[hPlayer];
-            if (st.hud.IsValid() && st.src.IsValid() && st.dst.IsValid() && st.pulse.IsValid())
+            if (st.hud.IsValid() && st.src.IsValid() && st.dst.IsValid()
+                && st.pulse.IsValid() && st.flash.IsValid())
                 return st;
             // stale handles (mission restarted) — rebuild, keep slot and active flag
             return this._RebuildState(hPlayer, st);
@@ -118,7 +146,7 @@ local m = {
     },
 
     function _DestroyState(st) {
-        foreach (k in ["hud", "src", "dst", "pulse", "beam"]) {
+        foreach (k in ["hud", "src", "dst", "pulse", "flash", "beam"]) {
             if (st[k] != null && st[k].IsValid()) st[k].Destroy();
             st[k] = null;
         }
@@ -128,10 +156,11 @@ local m = {
 
     // ---------- env_beam (world-space mode) ----------
 
-    // Persistent dormant env_beam: named + life>0 + no StartOn spawnflag means the
-    // engine never strikes it on its own (EnvBeam.cpp). Each StrikeOnce input
-    // broadcasts one temp-entity beam between the CURRENT marker positions that
-    // lives for beam_life seconds. No entities are created or destroyed per tick.
+    // Persistent server-side env_beam (life = 0). Both endpoints are entities
+    // WITH models, so the beam is networked once and every client tracks the
+    // marker positions frame-by-frame over the reliable entity channel — no
+    // per-tick temp entities (those get dropped on lossy connections).
+    // TurnOn/TurnOff only toggle EF_NODRAW; the endpoint binding is kept.
     function _EnsureBeam(st) {
         if (st.beam != null && st.beam.IsValid()) return st.beam;
         local b = Entities.CreateByClassname("env_beam");
@@ -139,17 +168,24 @@ local m = {
         b.__KeyValueFromString("LightningStart", st.srcName);
         b.__KeyValueFromString("LightningEnd", st.dstName);
         b.__KeyValueFromString("texture", "sprites/laserbeam.vmt");
-        b.__KeyValueFromFloat("life", this.variables.beam_life.tofloat());
+        b.__KeyValueFromString("life", "0");                 // permanent, server-side
         b.__KeyValueFromFloat("BoltWidth", this.variables.beam_width.tofloat());
         b.__KeyValueFromString("rendercolor", this._COLORS[st.slot]);
         b.__KeyValueFromInt("renderamt", this.variables.beam_alpha.tointeger());
         b.__KeyValueFromFloat("NoiseAmplitude", 0.0);
         b.__KeyValueFromInt("TextureScroll", 0);
-        b.__KeyValueFromString("spawnflags", "0");
+        b.__KeyValueFromString("spawnflags", "1");           // StartOn
         b.Spawn();
-        b.Activate();
+        b.Activate();    // binds the (modeled => tracked) endpoint entities here
         st.beam = b;
+        st.beamOn = true;
         return b;
+    },
+
+    function _BeamOff(st) {
+        if (st.beam != null && st.beam.IsValid() && st.beamOn)
+            DoEntFire("!self", "TurnOff", "", 0, null, st.beam);
+        st.beamOn = false;
     },
 
     // ---------- activation ----------
@@ -159,7 +195,10 @@ local m = {
         if (st == null) { ClientPrint(hPlayer, 3, "[LP] No free laser slots."); return; }
         if (st.active == on) return;
         st.active = on;
-        if (!on && st.hud.IsValid()) st.hud.SetInt(0, 0);
+        if (!on) {
+            if (st.hud.IsValid()) st.hud.SetInt(0, 0);
+            this._BeamOff(st);
+        }
         if (announce)
             ClientPrint(null, 3, "[LP] " + hPlayer.GetPlayerName() + ": laser "
                 + (on ? "ON" : "OFF") + " (" + this.variables.mode + ")");
@@ -175,6 +214,8 @@ local m = {
 
     function OnGameplayStart() {
         this.Cleanup();   // fresh round: drop stale handles, free all slots
+        PrecacheModel(this._MARKER_MODEL);
+        PrecacheModel(this._FLASH_SPRITE);
     },
 
     function OnGameEvent_player_say(params) {
@@ -204,7 +245,7 @@ local m = {
         if (hPlayer == null || !hPlayer.IsValid()) return;
         if (!(hPlayer in this._players)) return;
         local st = this._players[hPlayer];
-        if (!st.active || !st.hud.IsValid() || !st.pulse.IsValid()) return;
+        if (!st.active || !st.hud.IsValid() || !st.pulse.IsValid() || !st.flash.IsValid()) return;
 
         local hMarine = hPlayer.GetMarine();
         if (hMarine == null || !hMarine.IsValid()) return;
@@ -224,6 +265,11 @@ local m = {
         st.pulse.SetOrigin(pos);
         st.hud.SetFloat(1, this.variables.mark_duration.tofloat());
         st.hud.SetFloat(0, Time());
+
+        // engine-rendered glow flash — visible to clients without the files too
+        st.flash.SetOrigin(pos);
+        DoEntFire("!self", "ShowSprite", "", 0, null, st.flash);
+        DoEntFire("!self", "HideSprite", "", this.variables.mark_duration.tofloat(), null, st.flash);
 
         local what = this._DescribeTarget(pos);
         local d = pos - hMarine.GetOrigin();
@@ -291,6 +337,7 @@ local m = {
             local hMarine = hPlayer.GetMarine();
             if (hMarine == null || !hMarine.IsValid()) {
                 st.hud.SetInt(0, 0);      // hidden while dead; auto-resumes on respawn
+                this._BeamOff(st);
                 continue;
             }
 
@@ -309,8 +356,15 @@ local m = {
             st.hud.SetInt(2, beamMode ? 0 : 1);
             st.hud.SetInt(0, 1);
 
-            if (beamMode)
-                DoEntFire("!self", "StrikeOnce", "", 0, null, this._EnsureBeam(st));
+            if (beamMode) {
+                local b = this._EnsureBeam(st);
+                if (!st.beamOn) {
+                    DoEntFire("!self", "TurnOn", "", 0, null, b);
+                    st.beamOn = true;
+                }
+            } else {
+                this._BeamOff(st);
+            }
         }
 
         foreach (p in toHeal) this._RebuildState(p, this._players[p]);
